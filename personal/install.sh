@@ -18,6 +18,9 @@ set -euo pipefail
 prefix="$HOME/.local/opt/ghostty-personal/current"
 export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export GHOSTTY_RESOURCES_DIR="$prefix/share/ghostty"
+if [[ ${1:-} == +* ]]; then
+  exec "$prefix/bin/ghostty" "$@"
+fi
 exec "$prefix/bin/ghostty" --class=com.nickfixit.ghostty.personal --gtk-single-instance=false "$@"
 LAUNCHER
 chmod +x "$HOME/.local/bin/ghostty-personal"
