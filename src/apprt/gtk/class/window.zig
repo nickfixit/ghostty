@@ -360,6 +360,7 @@ pub const Window = extern struct {
             .init("new-tab", actionNewTab, null),
             .init("new-window", actionNewWindow, null),
             .init("prompt-surface-title", actionPromptSurfaceTitle, null),
+            .init("prompt-theme", actionPromptTheme, null),
             .init("prompt-tab-title", actionPromptTabTitle, null),
             .init("prompt-context-tab-title", actionPromptContextTabTitle, null),
             .init("ring-bell", actionRingBell, null),
@@ -1865,6 +1866,17 @@ pub const Window = extern struct {
         self: *Window,
     ) callconv(.c) void {
         self.performBindingAction(.prompt_surface_title);
+    }
+
+    fn actionPromptTheme(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const surface = self.getActiveSurface() orelse return;
+        @import("theme_dialog.zig").present(surface) catch |err| {
+            log.warn("unable to open theme picker: {}", .{err});
+        };
     }
 
     fn actionPromptTabTitle(

@@ -257,6 +257,12 @@ IMMulticontext im_context {
 menu context_menu_model {
   section {
     item {
+      label: _("Change Terminal Theme…");
+      action: "surface.prompt-theme";
+    }
+  }
+  section {
+    item {
       label: _("Copy");
       action: "win.copy";
     }

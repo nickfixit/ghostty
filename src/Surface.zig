@@ -36,6 +36,7 @@ const App = @import("App.zig");
 const internal_os = @import("os/main.zig");
 const inspectorpkg = @import("inspector/main.zig");
 const SurfaceMouse = @import("surface_mouse.zig");
+const ThemeOverride = @import("config/ThemeOverride.zig");
 
 const log = std.log.scoped(.surface);
 
@@ -130,6 +131,9 @@ size: rendererpkg.Size,
 /// we don't have a shared pointer hanging around that we need to worry about
 /// the lifetime of. This makes updating config at runtime easier.
 config: DerivedConfig,
+
+/// Session-local colours, reapplied after global/conditional config changes.
+theme_override: ?ThemeOverride = null,
 
 /// The conditional state of the configuration. This can affect
 /// how certain configurations take effect such as light/dark mode.
@@ -774,6 +778,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Surface) void {
+    if (self.theme_override) |*theme| theme.deinit(self.alloc);
     // Stop search thread
     if (self.search) |*s| s.deinit();
 
@@ -1686,6 +1691,22 @@ fn notifyConfigConditionalState(self: *Surface) void {
     };
 }
 
+/// Select colours for this terminal, or reset to the current application config.
+/// Parsing completes before replacing the selection, so invalid themes are inert.
+pub fn setThemeOverride(
+    self: *Surface,
+    name: ?[]const u8,
+    base: *const configpkg.Config,
+) !void {
+    var next: ?ThemeOverride = if (name) |v| try ThemeOverride.load(self.alloc, v) else null;
+    errdefer if (next) |*theme| theme.deinit(self.alloc);
+    var previous = self.theme_override;
+    self.theme_override = next;
+    errdefer self.theme_override = previous;
+    try self.updateConfig(base);
+    if (previous) |*theme| theme.deinit(self.alloc);
+}
+
 /// Update our configuration at runtime. This can be called by the apprt
 /// to set a surface-specific configuration that differs from the app
 /// or other surfaces.
@@ -1703,9 +1724,11 @@ pub fn updateConfig(
     };
     defer if (config_) |*c| c.deinit();
 
-    // We want a config pointer for everything so we get that either
-    // based on our conditional state or the original config.
-    const config: *const configpkg.Config = if (config_) |*c| c else original;
+    // Borrow the base config while deriving owned copies below. Colour
+    // overrides contain no pointers, so this needs no additional allocation.
+    var effective = (if (config_) |*c| c else original).*;
+    if (self.theme_override) |theme| theme.colors.apply(&effective);
+    const config: *const configpkg.Config = &effective;
 
     // Update our new derived config immediately
     const derived = DerivedConfig.init(self.alloc, config) catch |err| {

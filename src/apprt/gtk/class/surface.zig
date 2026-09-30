@@ -1806,6 +1806,7 @@ pub const Surface = extern struct {
         const priv: *Private = self.private();
 
         const actions = [_]ext.actions.Action(Self){
+            .init("prompt-theme", actionPromptTheme, null),
             .init(
                 "prompt-title",
                 actionPromptTitle,
@@ -2559,6 +2560,16 @@ pub const Surface = extern struct {
         const surface = self.core() orelse return;
         _ = surface.performBindingAction(.prompt_surface_title) catch |err| {
             log.warn("unable to perform prompt title action err={}", .{err});
+        };
+    }
+
+    pub fn actionPromptTheme(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        @import("theme_dialog.zig").present(self) catch |err| {
+            log.warn("unable to open theme picker: {}", .{err});
         };
     }
 
