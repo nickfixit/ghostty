@@ -7,12 +7,16 @@ Our small Linux/GTK patch on upstream **v1.3.1**, commit
 
 Open **Ghostty Personal** from the desktop launcher. In a terminal, use the
 main menu or right-click menu → **Change Terminal Theme…**. Open the dropdown
-and type to search installed themes, then select **Apply**.
+and type to search installed themes. Selecting a theme previews its colours
+immediately in the current terminal. **Apply** keeps the selection; **Cancel**
+or **Escape** restores the colours from before you opened the picker.
 
 Each terminal (including individual tabs and split panes) has its own selection.
 It lasts until that terminal closes and survives configuration reloads and
 system light/dark changes. New terminals start with the configured theme.
-Choose **Use configured theme** to reset. Cancel leaves the terminal unchanged.
+Choose **Use configured theme** to preview a reset to your configuration.
+Invalid themes leave the last preview in place and disable Apply until you
+select a valid theme.
 
 This picker changes background, foreground, ANSI palette, cursor, selection,
 search, and bold colours. Fonts, opacity, keybindings, commands, and the config
@@ -46,11 +50,14 @@ Ghostty configuration is loaded. Previous personal builds remain under
 zig build test -Dtest-filter=ThemeOverride -Dapp-runtime=gtk \
   -Demit-docs=false -fno-sys=gtk4-layer-shell -j2
 python3 personal/ui-smoke.py
+# To check the installed launcher:
+GHOSTTY_SMOKE_BIN="$HOME/.local/bin/ghostty-personal" python3 personal/ui-smoke.py
 ```
 
 The GUI check uses an isolated Xvfb display and D-Bus session. It requires
 Python GI/Atspi, Pillow, Xvfb, and the openSUSE accessibility registry binary.
-It never sends input to the real desktop.
+It checks live preview, Apply, Cancel/Escape, invalid themes, snapshot rollback,
+independent tabs/splits, reloads, and reset. It never sends input to the real desktop.
 
 ## Maintain
 

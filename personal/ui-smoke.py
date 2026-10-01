@@ -7,6 +7,7 @@ Never connects to or sends input to the user's desktop.
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -17,9 +18,14 @@ if "--session" not in sys.argv:
         time.sleep(1)
         if server.poll() is not None:
             raise RuntimeError("Private Xvfb could not start; refusing to use an existing display")
-        env = dict(os.environ, DISPLAY=display, GDK_BACKEND="x11", GTK_A11Y="atspi", LIBGL_ALWAYS_SOFTWARE="1", QT_QPA_PLATFORM="xcb")
-        env.pop("WAYLAND_DISPLAY", None)
-        sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, "--session"], env=env))
+        with tempfile.TemporaryDirectory(prefix="ghostty-preview-") as config_home:
+            themes = Path(config_home) / "ghostty/themes"
+            themes.mkdir(parents=True)
+            (themes / "Preview Invalid").write_text("background = invalid-colour\n")
+            (themes / "Preview Snapshot").write_text("background = #112233\n")
+            env = dict(os.environ, DISPLAY=display, GDK_BACKEND="x11", GTK_A11Y="atspi", LIBGL_ALWAYS_SOFTWARE="1", QT_QPA_PLATFORM="xcb", XDG_CONFIG_HOME=config_home)
+            env.pop("WAYLAND_DISPLAY", None)
+            sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, "--session"], env=env))
     finally:
         server.terminate()
         server.wait()
@@ -38,7 +44,7 @@ registry = subprocess.Popen(["/usr/libexec/at-spi2/at-spi2-registryd"], env=dict
 ROOT = Path(__file__).resolve().parents[1]
 log = open("/tmp/ghostty-ui.log", "w")
 app = subprocess.Popen([
-    str(ROOT / "zig-out/bin/ghostty"), "--config-default-files=false",
+    os.environ.get("GHOSTTY_SMOKE_BIN", str(ROOT / "zig-out/bin/ghostty")), "--config-default-files=false",
     "--gtk-single-instance=false", "--window-decoration=client", "--theme=Nord",
     "--background-opacity=1", "--unfocused-split-opacity=1", "--window-width=100", "--window-height=30",
     "--confirm-close-surface=false", "--command=/bin/bash --noprofile --norc",
@@ -90,6 +96,22 @@ x11.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctype
 x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
 x11.XFree.argtypes = [ctypes.c_void_p]
 
+class WindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int),
+        ("height", ctypes.c_int), ("border_width", ctypes.c_int), ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p), ("root", ctypes.c_ulong), ("window_class", ctypes.c_int),
+        ("bit_gravity", ctypes.c_int), ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong), ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long), ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long), ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
+
+x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(WindowAttributes)]
+
 def focus_window():
     root, parent = ctypes.c_ulong(), ctypes.c_ulong()
     children = ctypes.POINTER(ctypes.c_ulong)()
@@ -97,11 +119,16 @@ def focus_window():
     x11.XQueryTree(display, x11.XDefaultRootWindow(display), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count))
     found = False
     for window in list(children[:count.value]):
+        attributes = WindowAttributes()
+        if not x11.XGetWindowAttributes(display, window, ctypes.byref(attributes)) or attributes.map_state != 2:
+            continue
         name = ctypes.c_char_p()
         x11.XFetchName(display, window, ctypes.byref(name))
         if name.value:
             title = name.value.decode(errors="replace")
-            if str(ROOT) in title:
+            # This private display contains only the test application. The
+            # shell may abbreviate the working directory in its window title.
+            if title:
                 x11.XSetInputFocus(display, window, 2, 0)
                 found = True
             x11.XFree(name)
@@ -118,21 +145,43 @@ def keys(*names):
     x11.XFlush(display)
     time.sleep(1)
 
-def pick(name, current="Use configured theme", apply=True):
+def open_picker():
     click("Main Menu", "toggle button")
     click("", "menu item")  # Theme picker is the first main-menu item.
+
+def select_theme(name, current="Use configured theme"):
     click(current, "toggle button")
     assert find("", "entry").get_editable_text_iface().set_text_contents(name)
     time.sleep(0.7)
-    find(name, "label")  # Search must actually filter to the requested item.
-    # Xvfb test window is fixed at 1000x630. GTK's popup accessibility
-    # coordinates are local to the popup, so click its visible first row.
-    xtst.XTestFakeMotionEvent(display, -1, 420, 420, 0)
+    label = find(name, "label")  # Search must actually filter to the requested item.
+    # GTK reports zero screen coordinates and no activation action for popup
+    # rows. Locate its native X11 popup on this private display instead.
+    root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+    children = ctypes.POINTER(ctypes.c_ulong)()
+    count = ctypes.c_uint()
+    x11.XQueryTree(display, x11.XDefaultRootWindow(display), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count))
+    popup = None
+    for window in list(children[:count.value]):
+        attributes = WindowAttributes()
+        if x11.XGetWindowAttributes(display, window, ctypes.byref(attributes)) and attributes.map_state == 2 and attributes.override_redirect:
+            popup = (attributes.x, attributes.y, attributes.width, attributes.height)
+    x11.XFree(children)
+    assert popup, "Theme search popup not found"
+    xtst.XTestFakeMotionEvent(display, -1, popup[0] + 80, popup[1] + 74, 0)
     xtst.XTestFakeButtonEvent(display, 1, 1, 0)
     xtst.XTestFakeButtonEvent(display, 1, 0, 0)
     x11.XFlush(display)
-    time.sleep(0.5)
-    find(name, "combo box")
+    time.sleep(0.7)
+    try:
+        find(name, "combo box")
+    except AssertionError:
+        dump()
+        ImageGrab.grab().save("/tmp/ghostty-ui-failure.png")
+        raise
+
+def pick(name, current="Use configured theme", apply=True):
+    open_picker()
+    select_theme(name, current)
     click("Apply" if apply else "Cancel", "button")
     time.sleep(0.8)
 
@@ -140,6 +189,14 @@ def background(expected, point=(400, 300)):
     actual = ImageGrab.grab().getpixel(point)[:3]
     ImageGrab.grab().save("/tmp/ghostty-ui.png")
     assert actual == expected, (actual, expected)
+
+def preview(expected, reference, original):
+    # Adwaita dims the terminal behind its modal dialog. Compare a blank area
+    # using the dimming measured before selection, while the picker is open.
+    actual = ImageGrab.grab().getpixel((60, 250))[:3]
+    target = tuple(round(value * dim / base) for value, dim, base in zip(expected, reference, original))
+    ImageGrab.grab().save("/tmp/ghostty-ui.png")
+    assert all(abs(a - b) <= 2 for a, b in zip(actual, target)), (actual, target)
 
 try:
     for _ in range(60):
@@ -154,9 +211,39 @@ try:
     time.sleep(1)
     nord, dracula = (46, 52, 64), (40, 42, 54)
     background(nord)
+    open_picker()
+    dimmed_nord = ImageGrab.grab().getpixel((60, 250))[:3]
+    select_theme("Dracula")
+    preview(dracula, dimmed_nord, nord)
+    select_theme("Nord", "Dracula")
+    preview(nord, dimmed_nord, nord)
+    select_theme("Dracula", "Nord")
+    preview(dracula, dimmed_nord, nord)
+    click("Cancel", "button")
+    background(nord)
     pick("Dracula")
     background(dracula)
     pick("Nord", "Dracula", apply=False)
+    background(dracula)
+    open_picker()
+    select_theme("Nord", "Dracula")
+    keys("Escape")
+    background(dracula)
+    open_picker()
+    select_theme("Preview Invalid", "Dracula")
+    assert not find("Apply", "button").get_state_set().contains(Atspi.StateType.SENSITIVE)
+    select_theme("Nord", "Preview Invalid")
+    assert find("Apply", "button").get_state_set().contains(Atspi.StateType.SENSITIVE)
+    click("Cancel", "button")
+    background(dracula)
+    pick("Preview Snapshot", "Dracula")
+    background((17, 34, 51))
+    open_picker()
+    select_theme("Nord", "Preview Snapshot")
+    (Path(os.environ["XDG_CONFIG_HOME"]) / "ghostty/themes/Preview Snapshot").unlink()
+    click("Cancel", "button")
+    background((17, 34, 51))
+    pick("Dracula", "Preview Snapshot")
     background(dracula)
     keys("Control_L", "Shift_L", "t")
     background(nord)
@@ -170,8 +257,18 @@ try:
     keys("Control_L", "Shift_L", "o")
     background(dracula, (200, 300))
     background(nord, (700, 300))
+    keys("Control_L", "Alt_L", "Left")
+    open_picker()
+    before_left = ImageGrab.grab().getpixel((60, 250))[:3]
+    before_right = ImageGrab.grab().getpixel((900, 250))[:3]
+    select_theme("Nord", "Dracula")
+    preview(nord, before_left, dracula)
+    assert ImageGrab.grab().getpixel((900, 250))[:3] == before_right
+    click("Cancel", "button")
+    background(dracula, (200, 300))
+    background(nord, (700, 300))
     ImageGrab.grab().save("/tmp/ghostty-ui.png")
-    print("PASS: search, apply, cancel, independent tabs/splits, reload persistence, reset", flush=True)
+    print("PASS: live preview, apply, cancel, Escape, invalid theme recovery, snapshot rollback after file deletion, independent tabs/splits, reload persistence, reset", flush=True)
 finally:
     app.terminate()
     app.wait(timeout=10)

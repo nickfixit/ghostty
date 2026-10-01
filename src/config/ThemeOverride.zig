@@ -72,6 +72,11 @@ pub fn deinit(self: *ThemeOverride, alloc: std.mem.Allocator) void {
     self.* = undefined;
 }
 
+/// Keep the exact colours for preview rollback, without reopening a theme file.
+pub fn clone(self: ThemeOverride, alloc: std.mem.Allocator) !ThemeOverride {
+    return .{ .name = try alloc.dupeZ(u8, self.name), .colors = self.colors };
+}
+
 test "ThemeOverride changes colours without importing theme commands" {
     const alloc = std.testing.allocator;
     var source = try Config.default(alloc);

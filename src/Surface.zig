@@ -1700,11 +1700,20 @@ pub fn setThemeOverride(
 ) !void {
     var next: ?ThemeOverride = if (name) |v| try ThemeOverride.load(self.alloc, v) else null;
     errdefer if (next) |*theme| theme.deinit(self.alloc);
-    var previous = self.theme_override;
-    self.theme_override = next;
-    errdefer self.theme_override = previous;
+    try self.swapThemeOverride(&next, base);
+    if (next) |*theme| theme.deinit(self.alloc);
+}
+
+/// Exchange an owned snapshot with this terminal's selection. On success the
+/// caller owns the previous selection; on failure both selections are unchanged.
+pub fn swapThemeOverride(
+    self: *Surface,
+    snapshot: *?ThemeOverride,
+    base: *const configpkg.Config,
+) !void {
+    std.mem.swap(?ThemeOverride, &self.theme_override, snapshot);
+    errdefer std.mem.swap(?ThemeOverride, &self.theme_override, snapshot);
     try self.updateConfig(base);
-    if (previous) |*theme| theme.deinit(self.alloc);
 }
 
 /// Update our configuration at runtime. This can be called by the apprt
